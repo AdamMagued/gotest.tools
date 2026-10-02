@@ -29,7 +29,7 @@ func ResolveSourceFile(filename string) (string, error) {
 		return bazelSourcePath(filename)
 	}
 
-	if _, err := os.Stat(filename); err == nil {
+	if fileExists(filename) {
 		return filename, nil
 	}
 
@@ -45,35 +45,24 @@ func ResolveSourceFile(filename string) (string, error) {
 		}
 	}
 
-	if modRoot != "" && modPath != "" {
-		if filename == modPath {
-			candidate := modRoot
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
-			}
-		} else if strings.HasPrefix(filename, modPath+"/") {
-			rel := strings.TrimPrefix(filename, modPath+"/")
-			candidate := filepath.Join(modRoot, filepath.FromSlash(rel))
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
-			}
-		}
+	if candidate := resolveInModule(modRoot, modPath, filename); candidate != "" {
+		return candidate, nil
 	}
 
 	if modRoot != "" {
 		candidate := filepath.Join(modRoot, filepath.FromSlash(filename))
-		if _, err := os.Stat(candidate); err == nil {
+		if fileExists(candidate) {
 			return candidate, nil
 		}
 	}
 
 	if initialWorkingDir != "" {
 		candidate := filepath.Join(initialWorkingDir, filepath.FromSlash(filename))
-		if _, err := os.Stat(candidate); err == nil {
+		if fileExists(candidate) {
 			return candidate, nil
 		}
 		candidate = filepath.Join(initialWorkingDir, filepath.Base(filename))
-		if _, err := os.Stat(candidate); err == nil {
+		if fileExists(candidate) {
 			return candidate, nil
 		}
 	}
@@ -81,7 +70,34 @@ func ResolveSourceFile(filename string) (string, error) {
 	return "", fmt.Errorf(missingSourceMsg, filename)
 }
 
-var missingSourceMsg = "failed to find source file %s: if running with -trimpath, ensure the file is within the Go module or set GOTESTTOOLS_MODULE_DIR to the module root"
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func resolveInModule(modRoot, modPath, filename string) string {
+	if modRoot == "" || modPath == "" {
+		return ""
+	}
+	var rel string
+	switch {
+	case filename == modPath:
+		rel = ""
+	case strings.HasPrefix(filename, modPath+"/"):
+		rel = strings.TrimPrefix(filename, modPath+"/")
+	default:
+		return ""
+	}
+	candidate := filepath.Join(modRoot, filepath.FromSlash(rel))
+	if fileExists(candidate) {
+		return candidate
+	}
+	return ""
+}
+
+var missingSourceMsg = "failed to find source file %s: " +
+	"if running with -trimpath, ensure the file is within the Go module " +
+	"or set GOTESTTOOLS_MODULE_DIR to the module root"
 
 // FindModule walks up from dir looking for a go.mod file and returns the
 // module root directory and the module path parsed from go.mod.
@@ -126,16 +142,17 @@ func ParseModulePath(goModPath string) (string, error) {
 			if len(parts) > 0 {
 				return strings.Trim(parts[0], `"`), nil
 			}
-		} else {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 && parts[0] == "module" {
-				if parts[1] == "(" {
-					inModuleBlock = true
-					continue
-				}
-				return strings.Trim(parts[1], `"`), nil
-			}
+			continue
 		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 || parts[0] != "module" {
+			continue
+		}
+		if parts[1] == "(" {
+			inModuleBlock = true
+			continue
+		}
+		return strings.Trim(parts[1], `"`), nil
 	}
 	return "", errors.New("module directive not found in go.mod")
 }
